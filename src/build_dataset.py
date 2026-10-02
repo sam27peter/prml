@@ -1,6 +1,5 @@
 from datasets import load_dataset
 from pathlib import Path
-from PIL import Image
 import json
 
 
@@ -9,15 +8,16 @@ import json
 # ============================================================
 
 PEDESTRIAN_DATASET = "thirdeyelabs/indian-road-dataset"
-TRAFFIC_SIGN_DATASET = "chandrabhuma/Indian_Traffic_VQA_Dataset"
 
 MAX_PEDESTRIANS = 1000
-MAX_TRAFFIC_SIGNS = 1000
 
 MIN_CONFIDENCE = 0.70
 
-# Keep frames separated to reduce repeated video-frame samples.
-# Example: if we keep frame 100, skip nearby frames until 110.
+# Keep frames separated to reduce repeated video frames.
+# Example:
+# frame 100 -> keep
+# frame 101-109 -> skip
+# frame 110 -> can keep
 MIN_FRAME_GAP = 10
 
 OUTPUT_DIR = Path("data/dataset")
@@ -37,10 +37,8 @@ def create_directories():
         exist_ok=True
     )
 
-    TRAFFIC_SIGN_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    # Traffic-sign directory is NOT recreated.
+    # The existing 1000 verified images are kept.
 
 
 # ============================================================
@@ -50,7 +48,7 @@ def create_directories():
 def extract_pedestrians():
 
     print("\n==============================")
-    print("EXTRACTING PEDESTRIANS")
+    print("EXTRACTING FULL PEDESTRIAN FRAMES")
     print("==============================")
 
     dataset = load_dataset(
@@ -63,13 +61,17 @@ def extract_pedestrians():
 
     metadata = []
 
-    # Store the last accepted frame for every video clip.
+    # Store last accepted frame for each clip.
     last_frame_by_clip = {}
 
     for sample in dataset:
 
         if count >= MAX_PEDESTRIANS:
             break
+
+        # ----------------------------------------------------
+        # Get image
+        # ----------------------------------------------------
 
         image = sample.get("jpg")
 
@@ -79,6 +81,10 @@ def extract_pedestrians():
         if image is None:
             continue
 
+        # ----------------------------------------------------
+        # Get annotation
+        # ----------------------------------------------------
+
         annotation = sample["json"]
 
         frame_name = annotation.get(
@@ -87,28 +93,37 @@ def extract_pedestrians():
         )
 
         # ----------------------------------------------------
-        # Clip ID
+        # Get clip ID and filename
         # ----------------------------------------------------
 
         if "/" in frame_name:
-            clip_id, filename = frame_name.rsplit("/", 1)
+
+            clip_id, filename = frame_name.rsplit(
+                "/",
+                1
+            )
+
         else:
+
             clip_id = "unknown"
             filename = frame_name
 
         # ----------------------------------------------------
-        # Frame number
+        # Get frame number
         # ----------------------------------------------------
 
         try:
+
             frame_number = int(
                 Path(filename).stem
             )
+
         except ValueError:
+
             frame_number = None
 
         # ----------------------------------------------------
-        # Weather
+        # Get weather
         # ----------------------------------------------------
 
         attributes = annotation.get(
@@ -122,16 +137,24 @@ def extract_pedestrians():
         )
 
         # ----------------------------------------------------
-        # Check labels
+        # Find a valid pedestrian
         # ----------------------------------------------------
 
-        for label in annotation.get("labels", []):
+        valid_pedestrian = False
+        best_confidence = 0.0
 
-            if count >= MAX_PEDESTRIANS:
-                break
+        for label in annotation.get(
+            "labels",
+            []
+        ):
 
+            # We only want pedestrians.
             if label.get("category") != "person":
                 continue
+
+            # ------------------------------------------------
+            # Confidence
+            # ------------------------------------------------
 
             confidence = label.get(
                 "confidence",
@@ -142,183 +165,219 @@ def extract_pedestrians():
                 continue
 
             # ------------------------------------------------
-            # Avoid repeated nearby frames
+            # Bounding box
             # ------------------------------------------------
-
-            if frame_number is not None:
-
-                previous_frame = last_frame_by_clip.get(
-                    clip_id
-                )
-
-                if (
-                    previous_frame is not None
-                    and frame_number - previous_frame
-                    < MIN_FRAME_GAP
-                ):
-                    continue
 
             box = label.get("box2d")
 
             if not box:
                 continue
 
-            # ------------------------------------------------
-            # Bounding box
-            # ------------------------------------------------
+            try:
 
-            x1 = int(float(box["x1"]))
-            y1 = int(float(box["y1"]))
-            x2 = int(float(box["x2"]))
-            y2 = int(float(box["y2"]))
+                x1 = float(box["x1"])
+                y1 = float(box["y1"])
+                x2 = float(box["x2"])
+                y2 = float(box["y2"])
 
-            image_width, image_height = image.size
+            except (KeyError, TypeError, ValueError):
 
-            # Coordinates must stay inside image.
-            x1 = max(0, min(x1, image_width))
-            x2 = max(0, min(x2, image_width))
-
-            y1 = max(0, min(y1, image_height))
-            y2 = max(0, min(y2, image_height))
-
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            crop = image.crop(
-                (x1, y1, x2, y2)
-            )
-
-            # Reject extremely small people.
-            if crop.width < 20 or crop.height < 30:
                 continue
 
             # ------------------------------------------------
-            # Save
+            # Check pedestrian size
+            #
+            # We are NOT cropping.
+            #
+            # We only use the box to make sure that the
+            # pedestrian detection is meaningful.
             # ------------------------------------------------
 
-            output_name = (
-                f"pedestrian_{count:04d}.jpg"
+            box_width = x2 - x1
+            box_height = y2 - y1
+
+            if box_width < 20:
+                continue
+
+            if box_height < 30:
+                continue
+
+            valid_pedestrian = True
+
+            best_confidence = max(
+                best_confidence,
+                confidence
             )
 
-            crop.save(
-                PEDESTRIAN_DIR / output_name,
-                quality=95
-            )
-
-            metadata.append({
-                "filename": output_name,
-                "class": "pedestrian",
-                "weather": weather,
-                "clip_id": clip_id,
-                "frame": frame_name,
-                "frame_number": frame_number,
-                "confidence": confidence
-            })
-
-            count += 1
-
-            if frame_number is not None:
-                last_frame_by_clip[clip_id] = frame_number
-
-            print(
-                f"\rPedestrians: {count}/{MAX_PEDESTRIANS}",
-                end=""
-            )
-
-    print("\nPedestrian extraction complete.")
-
-    return metadata
-
-
-# ============================================================
-# TRAFFIC SIGN EXTRACTION
-# ============================================================
-
-def extract_traffic_signs():
-
-    print("\n==============================")
-    print("EXTRACTING TRAFFIC SIGNS")
-    print("==============================")
-
-    dataset = load_dataset(
-        TRAFFIC_SIGN_DATASET,
-        split="train",
-        streaming=True
-    )
-
-    count = 0
-
-    metadata = []
-
-    # Prevent the same image appearing more than once.
-    seen_images = set()
-
-    for sample in dataset:
-
-        if count >= MAX_TRAFFIC_SIGNS:
-            break
-
-        image_name = sample["image_name"]
-
-        if image_name in seen_images:
+        # No valid pedestrian in this frame.
+        if not valid_pedestrian:
             continue
 
-        seen_images.add(image_name)
+        # ----------------------------------------------------
+        # Avoid nearby repeated frames
+        # ----------------------------------------------------
 
-        image = sample["image"]
+        if frame_number is not None:
 
-        if image is None:
-            continue
+            previous_frame = last_frame_by_clip.get(
+                clip_id
+            )
 
-        sign_type = sample[" traffic_sign"]
+            if previous_frame is not None:
+
+                frame_difference = (
+                    frame_number - previous_frame
+                )
+
+                if frame_difference < MIN_FRAME_GAP:
+
+                    continue
+
+        # ----------------------------------------------------
+        # SAVE FULL ORIGINAL IMAGE
+        # ----------------------------------------------------
 
         output_name = (
-            f"traffic_sign_{count:04d}.jpg"
+            f"pedestrian_{count:04d}.jpg"
         )
 
         image.save(
-            TRAFFIC_SIGN_DIR / output_name,
-            quality=95
+            PEDESTRIAN_DIR / output_name,
+            quality=90
         )
 
+        # ----------------------------------------------------
+        # Save metadata
+        # ----------------------------------------------------
+
         metadata.append({
+
             "filename": output_name,
-            "class": "traffic_sign",
-            "sign_type": sign_type,
-            "original_name": image_name,
-            "weather": "unknown"
+
+            "class": "pedestrian",
+
+            "weather": weather,
+
+            "clip_id": clip_id,
+
+            "frame": frame_name,
+
+            "frame_number": frame_number,
+
+            "confidence": best_confidence
+
         })
 
         count += 1
 
+        # Remember this frame for this clip.
+        if frame_number is not None:
+
+            last_frame_by_clip[
+                clip_id
+            ] = frame_number
+
         print(
-            f"\rTraffic signs: {count}/{MAX_TRAFFIC_SIGNS}",
+            f"\rPedestrian frames: "
+            f"{count}/{MAX_PEDESTRIANS}",
             end=""
         )
 
-    print("\nTraffic-sign extraction complete.")
+    print(
+        "\nPedestrian extraction complete."
+    )
 
     return metadata
 
 
 # ============================================================
-# MAIN
+# READ EXISTING TRAFFIC-SIGN DATASET
 # ============================================================
 
-def main():
+def read_existing_traffic_signs():
 
-    create_directories()
+    print("\n==============================")
+    print("READING EXISTING TRAFFIC SIGNS")
+    print("==============================")
 
-    pedestrian_metadata = extract_pedestrians()
+    metadata_path = (
+        TRAFFIC_SIGN_DIR /
+        "metadata.json"
+    )
 
-    traffic_sign_metadata = extract_traffic_signs()
+    metadata = []
+
+    # --------------------------------------------------------
+    # If metadata exists, use it.
+    # --------------------------------------------------------
+
+    if metadata_path.exists():
+
+        with open(
+            metadata_path,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            metadata = json.load(file)
+
+        print(
+            f"Existing traffic-sign metadata: "
+            f"{len(metadata)}"
+        )
+
+        return metadata
+
+    # --------------------------------------------------------
+    # If metadata does not exist, rebuild metadata from files.
+    # --------------------------------------------------------
+
+    image_files = sorted(
+        TRAFFIC_SIGN_DIR.glob("*.jpg")
+    )
+
+    for image_path in image_files:
+
+        metadata.append({
+
+            "filename": image_path.name,
+
+            "class": "traffic_sign",
+
+            "sign_type": "unknown",
+
+            "original_name": image_path.name,
+
+            "weather": "unknown"
+
+        })
+
+    print(
+        f"Traffic-sign images found: "
+        f"{len(metadata)}"
+    )
+
+    return metadata
+
+
+# ============================================================
+# SAVE COMBINED METADATA
+# ============================================================
+
+def save_metadata(
+    pedestrian_metadata,
+    traffic_sign_metadata
+):
 
     all_metadata = (
         pedestrian_metadata
         + traffic_sign_metadata
     )
 
-    metadata_path = OUTPUT_DIR / "metadata.json"
+    metadata_path = (
+        OUTPUT_DIR /
+        "metadata.json"
+    )
 
     with open(
         metadata_path,
@@ -332,26 +391,86 @@ def main():
             indent=2
         )
 
-    print("\n==============================")
-    print("DATASET BUILD COMPLETE")
-    print("==============================")
+    return metadata_path
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print("\n========================================")
+    print("BUILDING FINAL DATASET")
+    print("========================================")
+
+    # --------------------------------------------------------
+    # Create required directories
+    # --------------------------------------------------------
+
+    create_directories()
+
+    # --------------------------------------------------------
+    # Extract ONLY pedestrians
+    # --------------------------------------------------------
+
+    pedestrian_metadata = (
+        extract_pedestrians()
+    )
+
+    # --------------------------------------------------------
+    # KEEP existing traffic signs
+    # --------------------------------------------------------
+
+    traffic_sign_metadata = (
+        read_existing_traffic_signs()
+    )
+
+    # --------------------------------------------------------
+    # Combine metadata
+    # --------------------------------------------------------
+
+    metadata_path = save_metadata(
+        pedestrian_metadata,
+        traffic_sign_metadata
+    )
+
+    # --------------------------------------------------------
+    # Final summary
+    # --------------------------------------------------------
+
+    print("\n========================================")
+    print("FINAL DATASET READY")
+    print("========================================")
 
     print(
-        f"Pedestrians   : {len(pedestrian_metadata)}"
+        f"Pedestrians   : "
+        f"{len(pedestrian_metadata)}"
     )
 
     print(
-        f"Traffic signs : {len(traffic_sign_metadata)}"
+        f"Traffic signs : "
+        f"{len(traffic_sign_metadata)}"
     )
 
     print(
-        f"Total samples : {len(all_metadata)}"
+        f"Total samples : "
+        f"{len(pedestrian_metadata) + len(traffic_sign_metadata)}"
     )
 
     print(
-        f"Metadata      : {metadata_path}"
+        f"Metadata      : "
+        f"{metadata_path}"
     )
 
+    print("\nTraffic-sign images were NOT downloaded again.")
+    print("Existing verified traffic-sign images were kept.")
+
+
+# ============================================================
+# PROGRAM ENTRY
+# ============================================================
 
 if __name__ == "__main__":
+
     main()
