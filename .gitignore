@@ -1,8 +1,12 @@
 __pycache__/
 *.pyc
 .vscode/
+
+data/
+
 results/*
 !results/.gitkeep
+
 *.csv
 *.npy
 *.npz
