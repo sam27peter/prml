@@ -1,73 +1,50 @@
 from pathlib import Path
-import json
 
 import numpy as np
 from PIL import Image, ImageOps
 
 
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
+# ============================================================
+# SETTINGS
+# ============================================================
 
 DATASET_DIR = Path("data/dataset")
-METADATA_PATH = DATASET_DIR / "metadata.json"
+OUTPUT_DIR = Path("data/processed")
 
 CANVAS_SIZE = (256, 256)
 
+# 0 = Not Pedestrian / Traffic Sign Proxy
+# 1 = Pedestrian
+CLASS_MAP = {
+    "traffic_sign": 0,
+    "pedestrian": 1,
+}
 
-# --------------------------------------------------
-# Metadata
-# --------------------------------------------------
-
-def load_metadata():
-    """Load dataset metadata."""
-
-    with open(METADATA_PATH, "r", encoding="utf-8") as file:
-        return json.load(file)
+VALID_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
-# --------------------------------------------------
-# Image preprocessing
-# --------------------------------------------------
+# ============================================================
+# IMAGE PREPROCESSING
+# ============================================================
 
 def load_image(image_path):
-    """
-    Load an image and correct its camera orientation.
-
-    No cropping.
-    No stretching.
-    """
-
     with Image.open(image_path) as image:
-
-        # Correct EXIF orientation
         image = ImageOps.exif_transpose(image)
-
-        # Convert to RGB first
         image = image.convert("RGB")
-
         return image.copy()
 
 
 def preserve_aspect_ratio(image):
-    """
-    Resize the COMPLETE image so that it fits inside
-    the 256x256 canvas without changing its aspect ratio.
-
-    The image is never cropped or stretched.
-    """
-
+    width, height = image.size
     canvas_width, canvas_height = CANVAS_SIZE
 
-    original_width, original_height = image.size
-
     scale = min(
-        canvas_width / original_width,
-        canvas_height / original_height
+        canvas_width / width,
+        canvas_height / height
     )
 
-    new_width = max(1, int(original_width * scale))
-    new_height = max(1, int(original_height * scale))
+    new_width = max(1, int(width * scale))
+    new_height = max(1, int(height * scale))
 
     return image.resize(
         (new_width, new_height),
@@ -76,176 +53,109 @@ def preserve_aspect_ratio(image):
 
 
 def create_canvas(image):
-    """
-    Place the complete image in the center of a
-    fixed-size canvas.
-
-    Remaining area is padding.
-    """
-
-    canvas_width, canvas_height = CANVAS_SIZE
-
     canvas = Image.new(
         "RGB",
         CANVAS_SIZE,
         color=(0, 0, 0)
     )
 
-    image_width, image_height = image.size
+    width, height = image.size
 
-    x = (canvas_width - image_width) // 2
-    y = (canvas_height - image_height) // 2
+    x = (CANVAS_SIZE[0] - width) // 2
+    y = (CANVAS_SIZE[1] - height) // 2
 
     canvas.paste(image, (x, y))
 
     return canvas
 
 
-def convert_to_grayscale(image):
-    """Convert RGB image to grayscale."""
+def preprocess_image(image_path):
+    image = load_image(image_path)
 
-    return image.convert("L")
+    # Preserve aspect ratio and resize
+    image = preserve_aspect_ratio(image)
 
+    # Pad to 256 x 256
+    image = create_canvas(image)
 
-def normalize_image(image):
-    """
-    Convert pixels from [0, 255] to [0, 1].
-    """
+    # Grayscale
+    image = image.convert("L")
 
-    array = np.asarray(
+    # Normalize 0-255 -> 0-1
+    image = np.asarray(
         image,
         dtype=np.float32
-    )
+    ) / 255.0
 
-    return array / 255.0
-
-
-def flatten_image(image):
-    """
-    Convert 2D image into a 1D feature vector.
-    """
-
+    # 256 x 256 -> 65,536 features
     return image.reshape(-1)
 
 
-# --------------------------------------------------
-# Complete preprocessing pipeline
-# --------------------------------------------------
+# ============================================================
+# BUILD DATASET
+# ============================================================
 
-def preprocess_image(image_path):
-    """
-    Complete preprocessing pipeline.
-
-    Original image
-        ↓
-    EXIF correction
-        ↓
-    Aspect-ratio preserving resize
-        ↓
-    Padding
-        ↓
-    Grayscale
-        ↓
-    Normalization
-        ↓
-    Flattening
-    """
-
-    image = load_image(image_path)
-
-    image = preserve_aspect_ratio(image)
-
-    image = create_canvas(image)
-
-    image = convert_to_grayscale(image)
-
-    image = normalize_image(image)
-
-    image = flatten_image(image)
-
-    return image
-
-
-# --------------------------------------------------
-# Dataset processing
-# --------------------------------------------------
-
-def build_feature_matrix(metadata):
-    """
-    Convert all images into a feature matrix.
-
-    Returns:
-        X -> image features
-        y -> class labels
-    """
-
+def build_dataset():
     X = []
     y = []
 
-    label_map = {
-        "pedestrian": 0,
-        "traffic_sign": 1
-    }
+    for class_name, label in CLASS_MAP.items():
 
-    total = len(metadata)
+        class_dir = DATASET_DIR / class_name
 
-    for index, item in enumerate(metadata, start=1):
+        if not class_dir.exists():
+            raise FileNotFoundError(
+                f"Missing folder: {class_dir}"
+            )
 
-        image_path = (
-            DATASET_DIR
-            / item["class"]
-            / item["filename"]
+        images = sorted(
+            p for p in class_dir.iterdir()
+            if p.is_file()
+            and p.suffix.lower() in VALID_EXTENSIONS
         )
 
-        features = preprocess_image(image_path)
+        print(f"{class_name}: {len(images)} images")
 
-        X.append(features)
-        y.append(label_map[item["class"]])
+        for image_path in images:
+            features = preprocess_image(image_path)
 
-        print(
-            f"\rProcessing images: "
-            f"{index}/{total}",
-            end=""
-        )
+            X.append(features)
+            y.append(label)
 
-    print()
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int64)
 
-    return (
-        np.asarray(X, dtype=np.float32),
-        np.asarray(y, dtype=np.int64)
-    )
+    return X, y
 
 
-# --------------------------------------------------
-# Main
-# --------------------------------------------------
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
 
-    print("\n================================")
+    print("\n==============================")
     print("PREPROCESSING DATASET")
-    print("================================")
+    print("==============================")
 
-    metadata = load_metadata()
+    X, y = build_dataset()
 
-    print(f"Total images: {len(metadata)}")
-    print(f"Canvas size : {CANVAS_SIZE}")
+    OUTPUT_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
-    X, y = build_feature_matrix(metadata)
+    np.save(OUTPUT_DIR / "X.npy", X)
+    np.save(OUTPUT_DIR / "y.npy", y)
 
-    print("\n================================")
+    print("\n==============================")
     print("PREPROCESSING COMPLETE")
-    print("================================")
+    print("==============================")
 
-    print("Feature matrix shape:", X.shape)
-    print("Label vector shape  :", y.shape)
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
+    print("Features per image:", X.shape[1])
 
-    print(
-        "Features per image  :",
-        X.shape[1]
-    )
-
-    print(
-        "Memory used:",
-        f"{X.nbytes / (1024 ** 2):.2f} MB"
-    )
+    print("\nClass counts:")
+    print("0 = Traffic Sign:", np.sum(y == 0))
+    print("1 = Pedestrian:", np.sum(y == 1))
