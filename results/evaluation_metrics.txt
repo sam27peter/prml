@@ -1,0 +1,10 @@
+TEST SET EVALUATION
+===================
+
+Test samples: 64
+Accuracy: 0.9688
+Precision: 0.9444
+Recall: 1.0000
+F1 Score: 0.9714
+ROC-AUC: 1.0000
+Average Precision: 1.0000

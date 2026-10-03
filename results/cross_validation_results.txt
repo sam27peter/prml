@@ -1,0 +1,15 @@
+STRATIFIED 5-FOLD CROSS-VALIDATION
+=================================
+
+Fold 1: Accuracy=0.9375, Precision=0.9167, Recall=0.9706, F1=0.9429
+Fold 2: Accuracy=0.9688, Precision=0.9706, Recall=0.9706, F1=0.9706
+Fold 3: Accuracy=0.9375, Precision=0.9688, Recall=0.9118, F1=0.9394
+Fold 4: Accuracy=0.9688, Precision=0.9444, Recall=1.0000, F1=0.9714
+Fold 5: Accuracy=0.9531, Precision=0.9697, Recall=0.9412, F1=0.9552
+
+Mean ± Standard Deviation
+
+Accuracy: 0.9531 ± 0.0140
+Precision: 0.9540 ± 0.0211
+Recall: 0.9588 ± 0.0300
+F1: 0.9559 ± 0.0134
